@@ -5,19 +5,20 @@ import (
 	"bufio"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 
 	crypt "github.com/coljac/slippard/internal/encryption"
 )
 
 type KeyStore struct {
-	keyPath string
-	keyFile string
+	keyPath   string
+	storeFile string
 }
 
 func (k KeyStore) writeLines(lines []string) error {
 	// TODO: Create a backup of the file before writing in case of error
-	filename, keyPath := k.keyFile, k.keyPath
+	filename, keyPath := k.storeFile, k.keyPath
 	file, err := os.Create(filename)
 	if err != nil {
 		return err
@@ -42,7 +43,10 @@ func (k KeyStore) writeLines(lines []string) error {
 }
 
 func (k KeyStore) create() error {
-	filename, _ := k.keyFile, k.keyPath
+	filename, _ := k.storeFile, k.keyPath
+	if err := os.MkdirAll(filepath.Dir(filename), os.ModePerm); err != nil {
+		return err
+	}
 	file, err := os.Create(filename)
 	if err != nil {
 		return err
@@ -53,7 +57,7 @@ func (k KeyStore) create() error {
 }
 
 func (k KeyStore) readLines() ([]string, error) {
-	filename, keyPath := k.keyFile, k.keyPath
+	filename, keyPath := k.storeFile, k.keyPath
 	file, err := os.Open(filename)
 	if err != nil {
 		return nil, err
@@ -172,11 +176,11 @@ func (k KeyStore) setKeyValue(key, value string) error {
 
 func main() {
 	store := KeyStore{
-		keyPath: os.Getenv("HOME") + "/.ssh/id_rsa",
-		keyFile: os.Getenv("HOME") + "/.config/slippard/store.dat",
+		keyPath:   os.Getenv("HOME") + "/.ssh/id_rsa",
+		storeFile: os.Getenv("HOME") + "/.config/slippard/store.dat",
 	}
 	// if keyFile does not exist, create it
-	if _, err := os.Stat(store.keyFile); os.IsNotExist(err) {
+	if _, err := os.Stat(store.storeFile); os.IsNotExist(err) {
 		err := store.create()
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Error creating store file: %v", err)
