@@ -14,12 +14,13 @@ import (
 type KeyStore struct {
 	keyPath   string
 	storeFile string
+	aesKey    []byte
+	keyBlob   []byte
 }
 
-func (k KeyStore) writeLines(lines []string) error {
+func (k *KeyStore) writeLines(lines []string) error {
 	// TODO: Create a backup of the file before writing in case of error
-	filename, keyPath := k.storeFile, k.keyPath
-	file, err := os.Create(filename)
+	file, err := os.Create(k.storeFile)
 	if err != nil {
 		return err
 	}
@@ -31,7 +32,17 @@ func (k KeyStore) writeLines(lines []string) error {
 	for _, line := range lines {
 		writer.WriteString(line + "\n")
 	}
-	cipherText, err := crypt.EncryptWithSSHKey(writer.String(), keyPath)
+	cipherText, err := crypt.EncryptWithAES([]byte(writer.String()), k.aesKey)
+	if err != nil {
+		return err
+	}
+	if k.keyBlob == nil {
+		k.keyBlob, err = crypt.EncryptWithSSHKey(k.aesKey, k.keyPath)
+		if err != nil {
+			return err
+		}
+	}
+	_, err = file.Write(k.keyBlob) // Encrypted key.
 	if err != nil {
 		return err
 	}
@@ -42,7 +53,7 @@ func (k KeyStore) writeLines(lines []string) error {
 	return nil
 }
 
-func (k KeyStore) create() error {
+func (k *KeyStore) create() error {
 	filename, _ := k.storeFile, k.keyPath
 	if err := os.MkdirAll(filepath.Dir(filename), os.ModePerm); err != nil {
 		return err
@@ -51,11 +62,18 @@ func (k KeyStore) create() error {
 	if err != nil {
 		return err
 	}
+	aesKey, err := crypt.MakeAesKey()
+	if err != nil {
+		return err
+	}
+
+	k.aesKey = aesKey
+
 	defer file.Close()
 	return nil
 }
 
-func (k KeyStore) readLines() ([]string, error) {
+func (k *KeyStore) readLines() ([]string, error) {
 	filename, keyPath := k.storeFile, k.keyPath
 	file, err := os.Open(filename)
 	if err != nil {
@@ -65,13 +83,26 @@ func (k KeyStore) readLines() ([]string, error) {
 	var lines []string
 
 	cipherText, err := os.ReadFile(filename)
+
 	if err != nil {
 		return nil, err
 	}
 	if len(cipherText) == 0 {
+		key, err := crypt.MakeAesKey()
+		if err != nil {
+			return nil, err
+		}
+		k.aesKey = key
 		return lines, nil
 	}
-	plainText, err := crypt.DecryptWithSSHKey(cipherText, keyPath)
+
+	k.keyBlob, cipherText = cipherText[:256], cipherText[256:]
+	k.aesKey, err = crypt.DecryptWithSSHKey(k.keyBlob, keyPath)
+	if err != nil {
+		return nil, err
+	}
+
+	plainText, err := crypt.DecryptWithAES(cipherText, k.aesKey)
 	if err != nil {
 		return nil, err
 	}
@@ -85,7 +116,7 @@ func (k KeyStore) readLines() ([]string, error) {
 	return lines, scanner.Err()
 }
 
-func (k KeyStore) listKeys(filter string) (string, error) {
+func (k *KeyStore) listKeys(filter string) (string, error) {
 	lines, err := k.readLines()
 	if err != nil {
 		return "", fmt.Errorf("error reading store file: %w", err)
@@ -101,7 +132,7 @@ func (k KeyStore) listKeys(filter string) (string, error) {
 	return builder.String(), nil
 }
 
-func (k KeyStore) delKeyValue(key string) error {
+func (k *KeyStore) delKeyValue(key string) error {
 	lines, err := k.readLines()
 	if err != nil {
 		return fmt.Errorf("error reading store file: %w", err)
@@ -122,7 +153,7 @@ func (k KeyStore) delKeyValue(key string) error {
 	return nil
 }
 
-func (k KeyStore) dumpStore() (string, error) {
+func (k *KeyStore) dumpStore() (string, error) {
 	lines, err := k.readLines()
 	if err != nil {
 		return "", fmt.Errorf("error reading store file: %w", err)
@@ -131,7 +162,7 @@ func (k KeyStore) dumpStore() (string, error) {
 	return strings.Join(lines, "\n"), nil
 }
 
-func (k KeyStore) getKeyValue(key string) (string, error) {
+func (k *KeyStore) getKeyValue(key string) (string, error) {
 	lines, err := k.readLines()
 	if err != nil {
 		return "", fmt.Errorf("error reading store file: %w", err)
@@ -146,7 +177,7 @@ func (k KeyStore) getKeyValue(key string) (string, error) {
 	return "", fmt.Errorf("key not found")
 }
 
-func (k KeyStore) setKeyValue(key, value string) error {
+func (k *KeyStore) setKeyValue(key, value string) error {
 	lines, err := k.readLines()
 	if err != nil {
 		return fmt.Errorf("error reading store file: %w", err)
