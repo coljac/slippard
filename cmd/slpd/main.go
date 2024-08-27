@@ -205,10 +205,21 @@ func (k *KeyStore) setKeyValue(key, value string) error {
 }
 
 func main() {
+	// Set keystore key and file path to defaults.
 	store := KeyStore{
 		keyPath:   os.Getenv("HOME") + "/.ssh/id_rsa",
 		storeFile: os.Getenv("HOME") + "/.config/slippard/store.dat",
 	}
+	// if env var SLP_KEY_PATH is set, use it
+	if os.Getenv("SLP_KEY_PATH") != "" {
+		store.keyPath = os.Getenv("SLP_KEY_PATH")
+	}
+	// if env var SLP_STORE_FILE is set, use it
+	if os.Getenv("SLP_STORE_FILE") != "" {
+		store.storeFile = os.Getenv("SLP_STORE_FILE")
+	}
+
+
 	// if keyFile does not exist, create it
 	if _, err := os.Stat(store.storeFile); os.IsNotExist(err) {
 		err := store.create()
