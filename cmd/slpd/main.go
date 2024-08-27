@@ -52,7 +52,6 @@ func (k KeyStore) create() error {
 		return err
 	}
 	defer file.Close()
-
 	return nil
 }
 
@@ -214,7 +213,11 @@ func main() {
 			}
 			key, value = parts[0], parts[1]
 		}
-		store.setKeyValue(key, value)
+		err := store.setKeyValue(key, value)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error setting key: %v", err)
+			os.Exit(1)
+		}
 	case "get":
 		if len(os.Args) != 3 {
 			fmt.Println("Usage: slpd get <key>")
