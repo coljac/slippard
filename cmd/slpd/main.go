@@ -18,6 +18,8 @@ type KeyStore struct {
 	keyBlob   []byte
 }
 
+const tagDelimiter = "\x1B" // ESC character
+
 func (k *KeyStore) writeLines(lines []string) error {
 	// TODO: Create a backup of the file before writing in case of error
 	file, err := os.Create(k.storeFile)
@@ -26,9 +28,7 @@ func (k *KeyStore) writeLines(lines []string) error {
 	}
 	defer file.Close()
 
-	// writer := bufio.NewWriter(file)
 	var writer strings.Builder
-
 	for _, line := range lines {
 		writer.WriteString(line + "\n")
 	}
@@ -42,10 +42,21 @@ func (k *KeyStore) writeLines(lines []string) error {
 			return err
 		}
 	}
-	_, err = file.Write(k.keyBlob) // Encrypted key.
+
+	// Write the length of the encrypted AES key (2 bytes)
+	keyBlobLength := uint16(len(k.keyBlob))
+	_, err = file.Write([]byte{byte(keyBlobLength >> 8), byte(keyBlobLength & 0xFF)})
 	if err != nil {
 		return err
 	}
+
+	// Write the encrypted AES key
+	_, err = file.Write(k.keyBlob)
+	if err != nil {
+		return err
+	}
+
+	// Write the encrypted data
 	_, err = file.Write([]byte(cipherText))
 	if err != nil {
 		return err
@@ -83,7 +94,6 @@ func (k *KeyStore) readLines() ([]string, error) {
 	var lines []string
 
 	cipherText, err := os.ReadFile(filename)
-
 	if err != nil {
 		return nil, err
 	}
@@ -96,34 +106,38 @@ func (k *KeyStore) readLines() ([]string, error) {
 		return lines, nil
 	}
 
-	k.keyBlob, cipherText = cipherText[:256], cipherText[256:]
+	// Read the length of the encrypted AES key (2 bytes)
+	keyBlobLength := int(cipherText[0])<<8 | int(cipherText[1])
+	cipherText = cipherText[2:]
+
+	// Extract the encrypted AES key and the remaining ciphertext
+	k.keyBlob, cipherText = cipherText[:keyBlobLength], cipherText[keyBlobLength:]
 	k.aesKey, err = crypt.DecryptWithSSHKey(k.keyBlob, keyPath)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("error decrypting AES key: %w", err)
 	}
 
 	plainText, err := crypt.DecryptWithAES(cipherText, k.aesKey)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("error decrypting data: %w", err)
 	}
 
 	// iterate over lines in plainText
 	scanner := bufio.NewScanner(strings.NewReader(plainText))
-	// scanner := bufio.NewScanner(plainText)
 	for scanner.Scan() {
 		lines = append(lines, scanner.Text())
 	}
 	return lines, scanner.Err()
 }
 
-func (k *KeyStore) listKeys(filter string) (string, error) {
+func (k *KeyStore) listKeys(filter, tag string) (string, error) {
 	lines, err := k.readLines()
 	if err != nil {
 		return "", fmt.Errorf("error reading store file: %w", err)
 	}
 	var builder strings.Builder
 	for _, line := range lines {
-		if filter == "" || strings.Contains(line, filter) {
+		if (filter == "" || strings.Contains(line, filter)) && (tag == "" || strings.HasSuffix(line, tagDelimiter+tag)) {
 			key := strings.SplitN(line, "=", 2)[0]
 			builder.WriteString(key + "\n")
 		}
@@ -153,16 +167,27 @@ func (k *KeyStore) delKeyValue(key string) error {
 	return nil
 }
 
-func (k *KeyStore) dumpStore() (string, error) {
+func (k *KeyStore) dumpStore(tag string) (string, error) {
 	lines, err := k.readLines()
 	if err != nil {
 		return "", fmt.Errorf("error reading store file: %w", err)
 	}
 
-	return strings.Join(lines, "\n"), nil
+	var trimmedLines []string
+	for _, line := range lines {
+		if tag == "" || strings.HasSuffix(line, tagDelimiter+tag) {
+			if idx := strings.LastIndex(line, tagDelimiter); idx != -1 {
+				trimmedLines = append(trimmedLines, line[:idx])
+			} else {
+				trimmedLines = append(trimmedLines, line)
+			}
+		}
+	}
+
+	return strings.Join(trimmedLines, "\n"), nil
 }
 
-func (k *KeyStore) getKeyValue(key string) (string, error) {
+func (k *KeyStore) getKeyValue(key, tag string) (string, error) {
 	lines, err := k.readLines()
 	if err != nil {
 		return "", fmt.Errorf("error reading store file: %w", err)
@@ -170,14 +195,16 @@ func (k *KeyStore) getKeyValue(key string) (string, error) {
 
 	for _, line := range lines {
 		if strings.HasPrefix(line, key+"=") {
-			return strings.TrimPrefix(line, key+"="), nil
+			if tag == "" || strings.HasSuffix(line, tagDelimiter+tag) {
+				return strings.TrimSuffix(strings.TrimPrefix(line, key+"="), tagDelimiter+tag), nil
+			}
 		}
 	}
 
 	return "", fmt.Errorf("key not found")
 }
 
-func (k *KeyStore) setKeyValue(key, value string) error {
+func (k *KeyStore) setKeyValue(key, value, tag string) error {
 	lines, err := k.readLines()
 	if err != nil {
 		return fmt.Errorf("error reading store file: %w", err)
@@ -186,14 +213,23 @@ func (k *KeyStore) setKeyValue(key, value string) error {
 	found := false
 	for i, line := range lines {
 		if strings.HasPrefix(line, key+"=") {
-			lines[i] = key + "=" + value
-			found = true
-			break
+			if tag == "" || strings.HasSuffix(line, tagDelimiter+tag) {
+				lines[i] = key + "=" + value
+				if tag != "" {
+					lines[i] += tagDelimiter + tag
+				}
+				found = true
+				break
+			}
 		}
 	}
 
 	if !found {
-		lines = append(lines, key+"="+value)
+		newLine := key + "=" + value
+		if tag != "" {
+			newLine += tagDelimiter + tag
+		}
+		lines = append(lines, newLine)
 	}
 
 	err = k.writeLines(lines)
@@ -219,7 +255,6 @@ func main() {
 		store.storeFile = os.Getenv("SLP_STORE_FILE")
 	}
 
-
 	// if keyFile does not exist, create it
 	if _, err := os.Stat(store.storeFile); os.IsNotExist(err) {
 		err := store.create()
@@ -234,12 +269,24 @@ func main() {
 		return
 	}
 
+	tag := ""
+
+	// Check for -t flag
+	for i, arg := range os.Args {
+		if arg == "-t" && i+1 < len(os.Args) {
+			tag = os.Args[i+1]
+			// Remove -t and tag from args
+			os.Args = append(os.Args[:i], os.Args[i+2:]...)
+			break
+		}
+	}
+
 	command := os.Args[1]
 
 	switch command {
 	case "set":
 		if len(os.Args) < 3 || len(os.Args) > 4 {
-			fmt.Println("Usage: slpd set <key> <value> or slpd set <key>=<value>")
+			fmt.Println("Usage: slpd set [-t <tag>] <key> <value> or slpd set [-t <tag>] <key>=<value>")
 			os.Exit(1)
 		}
 		key, value := "", ""
@@ -251,23 +298,21 @@ func main() {
 			if len(parts) != 2 {
 				fmt.Println("Invalid format. Use KEY=VALUE")
 				os.Exit(1)
-				// return
 			}
 			key, value = parts[0], parts[1]
 		}
-		err := store.setKeyValue(key, value)
+		err := store.setKeyValue(key, value, tag)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Error setting key: %v", err)
 			os.Exit(1)
 		}
 	case "get":
 		if len(os.Args) != 3 {
-			fmt.Println("Usage: slpd get <key>")
+			fmt.Println("Usage: slpd get [-t <tag>] <key>")
 			os.Exit(1)
-			// return
 		}
 		key := os.Args[2]
-		val, err := store.getKeyValue(key)
+		val, err := store.getKeyValue(key, tag)
 		if err == nil {
 			fmt.Println(val)
 		} else {
@@ -275,7 +320,7 @@ func main() {
 		}
 	case "del":
 		if len(os.Args) != 3 {
-			fmt.Println("Usage: slpd del <key>")
+			fmt.Println("Usage: slpd del [-t <tag>] <key>")
 			return
 		}
 		key := os.Args[2]
@@ -283,24 +328,24 @@ func main() {
 	case "list":
 		if len(os.Args) == 3 {
 			filter := os.Args[2]
-			keys, err := store.listKeys(filter)
+			keys, err := store.listKeys(filter, tag)
 			if err == nil {
 				fmt.Print(keys)
 			} else {
 				fmt.Fprintf(os.Stderr, "Error listing keys: %v", err)
 			}
 		} else if len(os.Args) == 2 {
-			result, err := store.listKeys("")
+			result, err := store.listKeys("", tag)
 			if err == nil {
 				fmt.Print(result)
 			} else {
 				fmt.Fprintf(os.Stderr, "Error listing keys: %v", err)
 			}
 		} else {
-			fmt.Fprintf(os.Stderr, "Usage: slpd list [<string>]")
+			fmt.Fprintf(os.Stderr, "Usage: slpd list [-t <tag>] [<string>]")
 		}
 	case "dump":
-		dump, err := store.dumpStore()
+		dump, err := store.dumpStore(tag)
 		if err == nil {
 			fmt.Println(dump)
 		} else {
@@ -314,9 +359,9 @@ func main() {
 				fmt.Fprintf(os.Stderr, "Invalid format. Use KEY=VALUE")
 				return
 			}
-			store.setKeyValue(parts[0], parts[1])
+			store.setKeyValue(parts[0], parts[1], tag)
 		} else {
-			fmt.Fprintf(os.Stderr, "Unknown command")
+			fmt.Fprintf(os.Stderr, "Unknown command\n")
 		}
 	}
 }

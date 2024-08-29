@@ -8,8 +8,11 @@ import (
 	"crypto/x509"
 	"encoding/pem"
 	"errors"
+	"fmt"
 	"io"
 	"os"
+
+	"golang.org/x/crypto/ssh"
 )
 
 func MakeAesKey() ([]byte, error) {
@@ -73,16 +76,32 @@ func EncryptWithSSHKey(data []byte, keyPath string) ([]byte, error) {
 	}
 
 	block, _ := pem.Decode(keyBytes)
-	if block == nil || block.Type != "RSA PRIVATE KEY" {
-		return nil, errors.New("failed to decode PEM block containing private key")
+	if block == nil {
+		return nil, errors.New("failed to decode PEM block")
 	}
 
-	privateKey, err := x509.ParsePKCS1PrivateKey(block.Bytes)
-	if err != nil {
-		return nil, err
-	}
+	var rsaPubKey *rsa.PublicKey
 
-	rsaPubKey := &privateKey.PublicKey
+	switch block.Type {
+	case "RSA PRIVATE KEY":
+		privateKey, err := x509.ParsePKCS1PrivateKey(block.Bytes)
+		if err != nil {
+			return nil, err
+		}
+		rsaPubKey = &privateKey.PublicKey
+	case "OPENSSH PRIVATE KEY":
+		key, err := ssh.ParseRawPrivateKey(keyBytes)
+		if err != nil {
+			return nil, err
+		}
+		privateKey, ok := key.(*rsa.PrivateKey)
+		if !ok {
+			return nil, errors.New("private key is not RSA")
+		}
+		rsaPubKey = &privateKey.PublicKey
+	default:
+		return nil, fmt.Errorf("unsupported key type: %s", block.Type)
+	}
 
 	encryptedBytes, err := rsa.EncryptPKCS1v15(rand.Reader, rsaPubKey, data)
 	if err != nil {
@@ -100,11 +119,26 @@ func DecryptWithSSHKey(encryptedData []byte, keyPath string) ([]byte, error) {
 	}
 
 	block, _ := pem.Decode(keyBytes)
-	if block == nil || block.Type != "RSA PRIVATE KEY" {
-		return nil, errors.New("failed to decode PEM block containing private key")
+
+	var privateKey *rsa.PrivateKey
+
+	switch block.Type {
+	case "RSA PRIVATE KEY":
+		privateKey, err = x509.ParsePKCS1PrivateKey(block.Bytes)
+	case "OPENSSH PRIVATE KEY":
+		key, err := ssh.ParseRawPrivateKey(keyBytes)
+		if err != nil {
+			return nil, err
+		}
+		var ok bool
+		privateKey, ok = key.(*rsa.PrivateKey)
+		if !ok {
+			return nil, errors.New("private key is not RSA")
+		}
+	default:
+		return nil, fmt.Errorf("unsupported key type: %s", block.Type)
 	}
 
-	privateKey, err := x509.ParsePKCS1PrivateKey(block.Bytes)
 	if err != nil {
 		return nil, err
 	}
