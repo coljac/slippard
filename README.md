@@ -38,6 +38,14 @@ KEY2=value2
 
 Keys are case sensitive.
 
+# Tags
+
+If you specify a tag when setting, listing, or dumping keys, the action will be filtered by that tag. Tags are specified with the `-t` option. For instance, `slpd set -t env KEY=VAL` will mean that `KEY` is returned from `slpd list -t env`, but all other keys set without that tag will be omitted.
+
+# Configuration
+
+The location of the key store can be overrided from the default of `~/.config/slippard/store.dat` with the `SLP_STORE_FILE` environment variable. The SSH key can be overridden from the default of `~/.ssh/id_rsa` with the `SLP_KEY_PATH` variable.
+
 # Examples
 
 `slpd list | fzf | xargs slpd get` to fuzzy-find a key
@@ -50,7 +58,6 @@ Keys are case sensitive.
 # TODOs
 
 - Better help and options
-- tags: Split a keystore up by tags
 - Linux package manager versions
 
 ## Name
