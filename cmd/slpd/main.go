@@ -177,7 +177,14 @@ func (k *KeyStore) dumpStore(tag string) (string, error) {
 	for _, line := range lines {
 		if tag == "" || strings.HasSuffix(line, tagDelimiter+tag) {
 			if idx := strings.LastIndex(line, tagDelimiter); idx != -1 {
-				trimmedLines = append(trimmedLines, line[:idx])
+				line = line[:idx]
+			}
+			
+			// Split the line into key and value
+			parts := strings.SplitN(line, "=", 2)
+			if len(parts) == 2 {
+				// Format as key="value" with quotes around the value
+				trimmedLines = append(trimmedLines, parts[0]+"=\""+parts[1]+"\"")
 			} else {
 				trimmedLines = append(trimmedLines, line)
 			}
