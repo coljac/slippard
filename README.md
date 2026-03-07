@@ -1,65 +1,82 @@
-# Slippard: Simple CLI key-value store, which uses your SSH key for encryption.
+# Slippard
 
-Slippard is designed to store text blobs against a key value, and to store the data in a secure, encrypted way.
+A simple CLI key-value store that uses your SSH key for encryption.
 
-# Installation
+Slippard stores key-value pairs in an encrypted file, using your existing RSA SSH key for encryption. No extra passwords or key management needed.
 
-If you have go installed, `go get github.com/coljac/slippard/cmd/slpd@latest`.
+## Installation
 
-Download a binary from the Releases page and put in your path.
+### Quick install (Linux/macOS)
 
-# Usage
+```sh
+curl -fsSL https://raw.githubusercontent.com/coljac/slippard/main/install.sh | sh
+```
 
-Slippard by default stores data in `$HOME/.config/slippard/store.dat` and encrypts/decrypts with `$HOME/.ssh/id_rsa`.
+This installs the latest release to `~/.local/bin`.
 
-Setting a key:
+### With Go
 
-`slpd set KEY=value` or `slpd set KEY value`
+```sh
+go install github.com/coljac/slippard/cmd/slpd@latest
+```
 
-Getting a key:
+### Manual
 
-`slpd get KEY`
+Download a binary from the [Releases page](https://github.com/coljac/slippard/releases) and place it in your `PATH`.
 
-Finding a key:
-
-`slpd list`, `slpd list <string>`
-
-Getting all keys and values:
-
-`slpd dump`
-
-which returns 
+## Usage
 
 ```
-KEY1=value1
-KEY2=value2
-...
+slpd set KEY value          # store a value
+slpd set KEY=value          # alternative syntax
+slpd get KEY                # retrieve a value
+slpd del KEY                # delete a key
+slpd list                   # list all keys
+slpd list <filter>          # list keys matching a substring
+slpd dump                   # print all key=value pairs (shell-safe quoting)
+slpd help                   # show help
 ```
 
 Keys are case sensitive.
 
-# Tags
+### Tags
 
-If you specify a tag when setting, listing, or dumping keys, the action will be filtered by that tag. Tags are specified with the `-t` option. For instance, `slpd set -t env KEY=VAL` will mean that `KEY` is returned from `slpd list -t env`, but all other keys set without that tag will be omitted.
+Use `-t <tag>` to organize keys into groups:
 
-# Configuration
+```sh
+slpd set -t prod DB_HOST=db.example.com
+slpd set -t staging DB_HOST=staging-db.local
 
-The location of the key store can be overrided from the default of `~/.config/slippard/store.dat` with the `SLP_STORE_FILE` environment variable. The SSH key can be overridden from the default of `~/.ssh/id_rsa` with the `SLP_KEY_PATH` variable.
+slpd list -t prod           # only keys tagged "prod"
+slpd dump -t prod           # dump only "prod" keys
+slpd get -t prod DB_HOST    # get a specific tagged key
+```
 
-# Examples
+### Configuration
 
-`slpd list | fzf | xargs slpd get` to fuzzy-find a key
+| Flag | Env var | Default | Description |
+|------|---------|---------|-------------|
+| `-k <path>` | `SLP_KEY_PATH` | `~/.ssh/id_rsa` | SSH private key |
+| `-s <path>` | `SLP_STORE_FILE` | `~/.config/slippard/store.dat` | Encrypted store file |
 
-`export KEY=$(slpd get KEY)` in .bashrc
+CLI flags take precedence over environment variables.
 
-`export $(slpd dump| xargs)` to add the whole keystore to the environment
+## Examples
 
+```sh
+# Fuzzy-find a key
+slpd list | fzf | xargs slpd get
 
-# TODOs
+# Load a single key into the environment
+export API_KEY=$(slpd get API_KEY)
 
-- Better help and options
-- Linux package manager versions
+# Load the entire keystore into the environment
+export $(slpd dump)
+
+# Use a separate store with a different SSH key
+slpd -k ~/.ssh/work_rsa -s ~/work-secrets.dat set TOKEN=abc123
+```
 
 ## Name
 
-Slippard is named for the Key-slapping Slippard in Dr Seuss' *I had Trouble Getting to Solla Sollew*.
+Slippard is named for the Key-slapping Slippard in Dr Seuss' *I Had Trouble Getting to Solla Sollew*.
