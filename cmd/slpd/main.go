@@ -11,7 +11,7 @@ import (
 	crypt "github.com/coljac/slippard/internal/encryption"
 )
 
-const version = "0.1.0"
+const version = "0.1.1"
 
 type KeyStore struct {
 	keyPath   string

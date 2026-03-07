@@ -1,5 +1,5 @@
 APP_NAME := slpd
-VERSION := 0.1.0
+VERSION := 0.1.1
 
 # Define the output directories
 OUTPUT_DIR := dist
