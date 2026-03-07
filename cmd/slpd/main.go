@@ -11,6 +11,8 @@ import (
 	crypt "github.com/coljac/slippard/internal/encryption"
 )
 
+const version = "0.1.0"
+
 type KeyStore struct {
 	keyPath   string
 	storeFile string
@@ -22,7 +24,7 @@ const tagDelimiter = "\x1B" // ESC character
 
 func (k *KeyStore) writeLines(lines []string) error {
 	// TODO: Create a backup of the file before writing in case of error
-	file, err := os.Create(k.storeFile)
+	file, err := os.OpenFile(k.storeFile, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0600)
 	if err != nil {
 		return err
 	}
@@ -65,11 +67,11 @@ func (k *KeyStore) writeLines(lines []string) error {
 }
 
 func (k *KeyStore) create() error {
-	filename, _ := k.storeFile, k.keyPath
-	if err := os.MkdirAll(filepath.Dir(filename), os.ModePerm); err != nil {
+	filename := k.storeFile
+	if err := os.MkdirAll(filepath.Dir(filename), 0700); err != nil {
 		return err
 	}
-	file, err := os.Create(filename)
+	file, err := os.OpenFile(filename, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0600)
 	if err != nil {
 		return err
 	}
@@ -86,11 +88,6 @@ func (k *KeyStore) create() error {
 
 func (k *KeyStore) readLines() ([]string, error) {
 	filename, keyPath := k.storeFile, k.keyPath
-	file, err := os.Open(filename)
-	if err != nil {
-		return nil, err
-	}
-	defer file.Close()
 	var lines []string
 
 	cipherText, err := os.ReadFile(filename)
@@ -106,9 +103,17 @@ func (k *KeyStore) readLines() ([]string, error) {
 		return lines, nil
 	}
 
+	if len(cipherText) < 2 {
+		return nil, fmt.Errorf("store file is corrupt: too short")
+	}
+
 	// Read the length of the encrypted AES key (2 bytes)
 	keyBlobLength := int(cipherText[0])<<8 | int(cipherText[1])
 	cipherText = cipherText[2:]
+
+	if keyBlobLength > len(cipherText) {
+		return nil, fmt.Errorf("store file is corrupt: key blob length %d exceeds data size %d", keyBlobLength, len(cipherText))
+	}
 
 	// Extract the encrypted AES key and the remaining ciphertext
 	k.keyBlob, cipherText = cipherText[:keyBlobLength], cipherText[keyBlobLength:]
@@ -183,8 +188,9 @@ func (k *KeyStore) dumpStore(tag string) (string, error) {
 			// Split the line into key and value
 			parts := strings.SplitN(line, "=", 2)
 			if len(parts) == 2 {
-				// Format as key="value" with quotes around the value
-				trimmedLines = append(trimmedLines, parts[0]+"=\""+parts[1]+"\"")
+				// Shell-escape the value with single quotes (escape embedded single quotes)
+				escaped := strings.ReplaceAll(parts[1], "'", "'\"'\"'")
+				trimmedLines = append(trimmedLines, parts[0]+"='"+escaped+"'")
 			} else {
 				trimmedLines = append(trimmedLines, line)
 			}
@@ -247,6 +253,44 @@ func (k *KeyStore) setKeyValue(key, value, tag string) error {
 	return nil
 }
 
+func printUsage() {
+	fmt.Print(`slpd - encrypted key-value store using your SSH key (v` + version + `)
+
+Usage:
+  slpd <command> [options] [arguments]
+  slpd KEY=VALUE              shorthand for 'slpd set KEY=VALUE'
+
+Commands:
+  set <key> <value>           set a key-value pair (also: set KEY=VALUE)
+  get <key>                   retrieve the value for a key
+  del <key>                   delete a key
+  list [<filter>]             list keys, optionally filtered by substring
+  dump                        print all key-value pairs (shell-safe quoting)
+  version                     print version
+  help                        show this help
+
+Options:
+  -t <tag>                    filter by or assign a tag
+  -k <path>                   path to SSH private key (default: ~/.ssh/id_rsa)
+  -s <path>                   path to store file (default: ~/.config/slippard/store.dat)
+
+Environment variables:
+  SLP_KEY_PATH                override SSH key path (same as -k)
+  SLP_STORE_FILE              override store file path (same as -s)
+
+CLI flags (-k, -s) take precedence over environment variables.
+
+Examples:
+  slpd set API_KEY sk-1234
+  slpd get API_KEY
+  slpd set -t prod DB_HOST=db.example.com
+  slpd list -t prod
+  slpd dump -t prod
+  slpd list | fzf | xargs slpd get
+  export $(slpd dump)
+`)
+}
+
 func main() {
 	// Set keystore key and file path to defaults.
 	store := KeyStore{
@@ -262,113 +306,142 @@ func main() {
 		store.storeFile = os.Getenv("SLP_STORE_FILE")
 	}
 
-	// if keyFile does not exist, create it
-	if _, err := os.Stat(store.storeFile); os.IsNotExist(err) {
-		err := store.create()
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "Error creating store file: %v", err)
-			os.Exit(1)
+	tag := ""
+
+	// Parse global flags before command dispatch
+	args := os.Args[1:]
+	var filtered []string
+	for i := 0; i < len(args); i++ {
+		switch args[i] {
+		case "-t":
+			if i+1 >= len(args) {
+				fmt.Fprintln(os.Stderr, "Error: -t requires an argument")
+				os.Exit(1)
+			}
+			tag = args[i+1]
+			i++
+		case "-k":
+			if i+1 >= len(args) {
+				fmt.Fprintln(os.Stderr, "Error: -k requires an argument")
+				os.Exit(1)
+			}
+			store.keyPath = args[i+1]
+			i++
+		case "-s":
+			if i+1 >= len(args) {
+				fmt.Fprintln(os.Stderr, "Error: -s requires an argument")
+				os.Exit(1)
+			}
+			store.storeFile = args[i+1]
+			i++
+		default:
+			filtered = append(filtered, args[i])
 		}
 	}
 
-	if len(os.Args) < 2 {
-		fmt.Println("Usage: slpd <command> [arguments]")
+	if len(filtered) == 0 {
+		printUsage()
 		return
 	}
 
-	tag := ""
+	command := filtered[0]
 
-	// Check for -t flag
-	for i, arg := range os.Args {
-		if arg == "-t" && i+1 < len(os.Args) {
-			tag = os.Args[i+1]
-			// Remove -t and tag from args
-			os.Args = append(os.Args[:i], os.Args[i+2:]...)
-			break
+	if command == "help" || command == "-h" || command == "--help" {
+		printUsage()
+		return
+	}
+
+	if command == "version" || command == "--version" || command == "-v" {
+		fmt.Println("slpd " + version)
+		return
+	}
+
+	// if store file does not exist, create it
+	if _, err := os.Stat(store.storeFile); os.IsNotExist(err) {
+		err := store.create()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error creating store file: %v\n", err)
+			os.Exit(1)
 		}
 	}
 
-	command := os.Args[1]
-
 	switch command {
 	case "set":
-		if len(os.Args) < 3 || len(os.Args) > 4 {
-			fmt.Println("Usage: slpd set [-t <tag>] <key> <value> or slpd set [-t <tag>] <key>=<value>")
+		if len(filtered) < 2 || len(filtered) > 3 {
+			fmt.Fprintln(os.Stderr, "Usage: slpd set [-t <tag>] <key> <value> or slpd set [-t <tag>] <key>=<value>")
 			os.Exit(1)
 		}
 		key, value := "", ""
-		if len(os.Args) == 4 {
-			key, value = os.Args[2], os.Args[3]
+		if len(filtered) == 3 {
+			key, value = filtered[1], filtered[2]
 		} else {
-			// split os.Args[2] by "="
-			parts := strings.SplitN(os.Args[2], "=", 2)
+			parts := strings.SplitN(filtered[1], "=", 2)
 			if len(parts) != 2 {
-				fmt.Println("Invalid format. Use KEY=VALUE")
+				fmt.Fprintln(os.Stderr, "Invalid format. Use KEY=VALUE or KEY VALUE")
 				os.Exit(1)
 			}
 			key, value = parts[0], parts[1]
 		}
 		err := store.setKeyValue(key, value, tag)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "Error setting key: %v", err)
+			fmt.Fprintf(os.Stderr, "Error setting key: %v\n", err)
 			os.Exit(1)
 		}
 	case "get":
-		if len(os.Args) != 3 {
-			fmt.Println("Usage: slpd get [-t <tag>] <key>")
+		if len(filtered) != 2 {
+			fmt.Fprintln(os.Stderr, "Usage: slpd get [-t <tag>] <key>")
 			os.Exit(1)
 		}
-		key := os.Args[2]
+		key := filtered[1]
 		val, err := store.getKeyValue(key, tag)
-		if err == nil {
-			fmt.Println(val)
-		} else {
-			fmt.Fprintf(os.Stderr, "Error getting key: %v", err)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			os.Exit(1)
 		}
+		fmt.Println(val)
 	case "del":
-		if len(os.Args) != 3 {
-			fmt.Println("Usage: slpd del [-t <tag>] <key>")
-			return
+		if len(filtered) != 2 {
+			fmt.Fprintln(os.Stderr, "Usage: slpd del <key>")
+			os.Exit(1)
 		}
-		key := os.Args[2]
-		store.delKeyValue(key)
+		key := filtered[1]
+		err := store.delKeyValue(key)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error deleting key: %v\n", err)
+			os.Exit(1)
+		}
 	case "list":
-		if len(os.Args) == 3 {
-			filter := os.Args[2]
-			keys, err := store.listKeys(filter, tag)
-			if err == nil {
-				fmt.Print(keys)
-			} else {
-				fmt.Fprintf(os.Stderr, "Error listing keys: %v", err)
-			}
-		} else if len(os.Args) == 2 {
-			result, err := store.listKeys("", tag)
-			if err == nil {
-				fmt.Print(result)
-			} else {
-				fmt.Fprintf(os.Stderr, "Error listing keys: %v", err)
-			}
-		} else {
-			fmt.Fprintf(os.Stderr, "Usage: slpd list [-t <tag>] [<string>]")
+		filter := ""
+		if len(filtered) == 2 {
+			filter = filtered[1]
+		} else if len(filtered) > 2 {
+			fmt.Fprintln(os.Stderr, "Usage: slpd list [-t <tag>] [<filter>]")
+			os.Exit(1)
 		}
+		result, err := store.listKeys(filter, tag)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error listing keys: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Print(result)
 	case "dump":
 		dump, err := store.dumpStore(tag)
-		if err == nil {
-			fmt.Println(dump)
-		} else {
-			fmt.Fprintf(os.Stderr, "Error dumping store: %v", err)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error dumping store: %v\n", err)
 			os.Exit(1)
 		}
+		fmt.Println(dump)
 	default:
 		if strings.Contains(command, "=") {
 			parts := strings.SplitN(command, "=", 2)
-			if len(parts) != 2 {
-				fmt.Fprintf(os.Stderr, "Invalid format. Use KEY=VALUE")
-				return
+			err := store.setKeyValue(parts[0], parts[1], tag)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Error setting key: %v\n", err)
+				os.Exit(1)
 			}
-			store.setKeyValue(parts[0], parts[1], tag)
 		} else {
-			fmt.Fprintf(os.Stderr, "Unknown command\n")
+			fmt.Fprintf(os.Stderr, "Unknown command: %s\nRun 'slpd help' for usage.\n", command)
+			os.Exit(1)
 		}
 	}
 }
