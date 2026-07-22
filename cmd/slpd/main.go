@@ -4,14 +4,16 @@ package main
 import (
 	"bufio"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
 
 	crypt "github.com/coljac/slippard/internal/encryption"
+	"golang.org/x/term"
 )
 
-const version = "0.1.1"
+const version = "0.1.2"
 
 type KeyStore struct {
 	keyPath   string
@@ -253,6 +255,27 @@ func (k *KeyStore) setKeyValue(key, value, tag string) error {
 	return nil
 }
 
+// promptValue reads a secret from stdin: hidden (no echo) when stdin is a
+// terminal, otherwise the first line of piped input. The store is line-based,
+// so values may not contain newlines.
+func promptValue(key string) (string, error) {
+	fd := int(os.Stdin.Fd())
+	if term.IsTerminal(fd) {
+		fmt.Fprintf(os.Stderr, "Enter value for %s (input hidden): ", key)
+		value, err := term.ReadPassword(fd)
+		fmt.Fprintln(os.Stderr)
+		if err != nil {
+			return "", err
+		}
+		return string(value), nil
+	}
+	line, err := bufio.NewReader(os.Stdin).ReadString('\n')
+	if err != nil && err != io.EOF {
+		return "", err
+	}
+	return strings.TrimRight(line, "\r\n"), nil
+}
+
 func printUsage() {
 	fmt.Print(`slpd - encrypted key-value store using your SSH key (v` + version + `)
 
@@ -262,6 +285,7 @@ Usage:
 
 Commands:
   set <key> <value>           set a key-value pair (also: set KEY=VALUE)
+  set <key>                   prompt for the value (keeps secrets out of shell history)
   get <key>                   retrieve the value for a key
   del <key>                   delete a key
   list [<filter>]             list keys, optionally filtered by substring
@@ -282,6 +306,7 @@ CLI flags (-k, -s) take precedence over environment variables.
 
 Examples:
   slpd set API_KEY sk-1234
+  slpd set API_KEY             # prompts for the value, input hidden
   slpd get API_KEY
   slpd set -t prod DB_HOST=db.example.com
   slpd list -t prod
@@ -368,19 +393,27 @@ func main() {
 	switch command {
 	case "set":
 		if len(filtered) < 2 || len(filtered) > 3 {
-			fmt.Fprintln(os.Stderr, "Usage: slpd set [-t <tag>] <key> <value> or slpd set [-t <tag>] <key>=<value>")
+			fmt.Fprintln(os.Stderr, "Usage: slpd set [-t <tag>] <key> [<value>]  (omit <value> to be prompted)")
 			os.Exit(1)
 		}
 		key, value := "", ""
 		if len(filtered) == 3 {
 			key, value = filtered[1], filtered[2]
-		} else {
+		} else if strings.Contains(filtered[1], "=") {
 			parts := strings.SplitN(filtered[1], "=", 2)
-			if len(parts) != 2 {
-				fmt.Fprintln(os.Stderr, "Invalid format. Use KEY=VALUE or KEY VALUE")
+			key, value = parts[0], parts[1]
+		} else {
+			key = filtered[1]
+			var err error
+			value, err = promptValue(key)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Error reading value: %v\n", err)
 				os.Exit(1)
 			}
-			key, value = parts[0], parts[1]
+			if value == "" {
+				fmt.Fprintln(os.Stderr, "Error: empty value, nothing stored")
+				os.Exit(1)
+			}
 		}
 		err := store.setKeyValue(key, value, tag)
 		if err != nil {

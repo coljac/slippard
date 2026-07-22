@@ -29,6 +29,7 @@ Download a binary from the [Releases page](https://github.com/coljac/slippard/re
 ```
 slpd set KEY value          # store a value
 slpd set KEY=value          # alternative syntax
+slpd set KEY                # prompt for the value (hidden input, stays out of shell history)
 slpd get KEY                # retrieve a value
 slpd del KEY                # delete a key
 slpd list                   # list all keys
@@ -64,6 +65,10 @@ CLI flags take precedence over environment variables.
 ## Examples
 
 ```sh
+# Store a secret without it landing in your shell history
+slpd set API_KEY            # prompts, input hidden
+pass show api/key | slpd set API_KEY   # or pipe it in
+
 # Fuzzy-find a key
 slpd list | fzf | xargs slpd get
 
